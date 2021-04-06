@@ -1,4 +1,5 @@
 const { flattenObject, objectMap } = require('./utils');
+const he = require('he');
 
 module.exports = function registerHook({ services, env, database, getSchema }) {
 	const extensionConfig = require(env.EXTENSION_SEARCHSYNC_CONFIG ||
@@ -53,8 +54,9 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 
 	async function reindexCollection(collection) {
 		const schema = await getSchema();
-		const query = new services.ItemsService(collection, { database, schema });
-		const pk = schema['tables'][collection].primary;
+		const directusCollection = extensionConfig.collections[collection].collection || collection;
+		const query = new services.ItemsService(directusCollection, { database, schema });
+		const pk = schema['tables'][directusCollection].primary;
 		const items = await query.readByQuery({
 			fields: [pk],
 			filter: extensionConfig.collections[collection].filter || [],
@@ -73,10 +75,11 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 	}
 
 	async function updateItemIndex(collection, id, schema) {
+		const directusCollection = extensionConfig.collections[collection].collection || collection;
 		const body = await getItemObject(collection, id, schema);
 		try {
 			if (body) {
-				indexer.updateItem(collection, id, body, schema['tables'][collection].primary);
+				indexer.updateItem(collection, id, body, schema['tables'][directusCollection].primary);
 			} else {
 				indexer.deleteItem(collection, id);
 			}
@@ -86,7 +89,8 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 	}
 
 	async function getItemObject(collection, id, schema) {
-		const query = new services.ItemsService(collection, {
+		const directusCollection = extensionConfig.collections[collection].collection || collection;
+		const query = new services.ItemsService(directusCollection, {
 			knex: database,
 			schema: schema,
 		});
@@ -101,7 +105,7 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 		if (extensionConfig.collections[collection].stripHtml) {
 			data = objectMap(data,
 				(value) => typeof value === 'string' 
-					? value.replace(/(<([^>]+)>)/gi, " ")
+					? he.decode(value.replace(/(<([^>]+)>)/gi, " ")).replace(/\s+/g,' ').trim()
 					: value
 			);
 		}
