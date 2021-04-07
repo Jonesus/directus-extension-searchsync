@@ -14,33 +14,29 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 	}
 
 	const indexer = require(`./indexers/${extensionConfig.server.type}`)(
-		extensionConfig.server
+		extensionConfig.server,
+		env
 	);
 
 	return {
 		"server.start": initCollectionIndexes,
 		"items.create": hookEventHandler.bind(null, updateItemIndex),
 		"items.update": hookEventHandler.bind(null, updateItemIndex),
-		"items.delete": hookEventHandler.bind(null, deleteItemIndex),
+		"items.delete.before": hookEventHandler.bind(null, deleteItemIndex),
 	};
 
 	async function initCollectionIndexes() {
 		for (const collection of Object.keys(extensionConfig.collections)) {
 			if (extensionConfig.reindexOnStart) {
-				try {
-					await indexer.dropIndex(collection);
-				} catch (error) {
-					errorLog("DROP", collection, null, error);
+				const translations = extensionConfig.collections[collection].translations;
+				if (translations) {
+					for (const translationIndex of Object.values(translations)) {
+						await reindexIndex(collection, translationIndex);
+					}
+				} else {
+					await reindexIndex(collection);
 				}
-
-				try {
-					await indexer.createIndex(collection);
-				} catch (error) {
-					errorLog("CREATE", collection, null, error);
-					continue;
-				}
-
-				reindexCollection(collection);
+				await reindexCollection(collection);
 			} else {
 				try {
 					await indexer.createIndex(collection);
@@ -52,11 +48,25 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 		}
 	}
 
+	async function reindexIndex(collection, index) {
+		try {
+			await indexer.dropIndex(index || collection);
+		} catch (error) {
+			errorLog("DROP", index, null, error);
+		}
+
+		try {
+			await indexer.createIndex(index || collection);
+		} catch (error) {
+			errorLog("CREATE", index, null, error);
+			return;
+		}
+	}
+
 	async function reindexCollection(collection) {
 		const schema = await getSchema();
-		const directusCollection = extensionConfig.collections[collection].collection || collection;
-		const query = new services.ItemsService(directusCollection, { database, schema });
-		const pk = schema['tables'][directusCollection].primary;
+		const query = new services.ItemsService(collection, { database, schema });
+		const pk = schema['tables'][collection].primary;
 		const items = await query.readByQuery({
 			fields: [pk],
 			filter: extensionConfig.collections[collection].filter || [],
@@ -66,31 +76,52 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 		}
 	}
 
-	async function deleteItemIndex(collection, id) {
+	async function deleteItemIndex(collection, id, schema) {
 		try {
-			indexer.deleteItem(collection, id);
+			const translations = extensionConfig.collections[collection].translations;
+			if (translations) {
+				const body = await getItemObject(collection, id, schema);
+				for (const translationKey of Object.keys(translations)) {
+					const translationData = body?.translations.find(t => t.languages_code === translationKey);
+					if (body && translationData) {
+						indexer.deleteItem(translations[translationKey], id);
+					}
+				}
+			} else {
+				indexer.deleteItem(collection, id);
+			}
 		} catch (error) {
 			errorLog("delete", collection, id, error);
 		}
 	}
 
 	async function updateItemIndex(collection, id, schema) {
-		const directusCollection = extensionConfig.collections[collection].collection || collection;
 		const body = await getItemObject(collection, id, schema);
 		try {
-			if (body) {
-				indexer.updateItem(collection, id, body, schema['tables'][directusCollection].primary);
+			const translations = extensionConfig.collections[collection].translations;
+			if (translations) {
+				for (const translationKey of Object.keys(translations)) {
+					const translationData = body?.translations.find(t => t.languages_code === translationKey);
+					if (body && translationData) {
+						const singleLanguageBody = transformData({ ...body, translations: translationData }, collection);
+						indexer.updateItem(translations[translationKey], id, singleLanguageBody, schema['tables'][collection].primary);
+					}
+				}
 			} else {
-				indexer.deleteItem(collection, id);
+				if (body) {
+					indexer.updateItem(collection, id, transformData(body, collection), schema['tables'][collection].primary);
+				} else {
+					indexer.deleteItem(collection, id);
+				}
 			}
 		} catch (error) {
+			console.log(error)
 			errorLog("update", collection, id, error);
 		}
 	}
 
 	async function getItemObject(collection, id, schema) {
-		const directusCollection = extensionConfig.collections[collection].collection || collection;
-		const query = new services.ItemsService(directusCollection, {
+		const query = new services.ItemsService(collection, {
 			knex: database,
 			schema: schema,
 		});
@@ -98,17 +129,6 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 			fields: extensionConfig.collections[collection].fields,
 			filter: extensionConfig.collections[collection].filter || [],
 		});
-
-		if (extensionConfig.collections[collection].flatten) {
-			data = flattenObject(data);
-		}
-		if (extensionConfig.collections[collection].stripHtml) {
-			data = objectMap(data,
-				(value) => typeof value === 'string' 
-					? he.decode(value.replace(/(<([^>]+)>)/gi, " ")).replace(/\s+/g,' ').trim()
-					: value
-			);
-		}
 
 		return data;
 	}
@@ -129,5 +149,19 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 			`Error when ${action} ${collection}/${id || ""}`,
 			error ? "" : error.toString()
 		);
+	}
+
+	function transformData(data, collection) {
+		if (extensionConfig.collections[collection].flatten) {
+			data = flattenObject(data);
+		}
+		if (extensionConfig.collections[collection].stripHtml) {
+			data = objectMap(data,
+				(value) => typeof value === 'string'
+					? he.decode(value.replace(/(<([^>]+)>)/gi, " ")).replace(/\s+/g,' ').trim()
+					: value
+			);
+		}
+		return data;
 	}
 };
