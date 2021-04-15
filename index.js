@@ -101,7 +101,10 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 			const translations = extensionConfig.collections[collection].translations;
 			if (translations) {
 				for (const translationKey of Object.keys(translations)) {
-					const translationData = body?.translations.find(t => t.languages_code === translationKey);
+					let translationData = body?.translations.find(t => t.languages_code === translationKey);
+					if (!translationData) {
+						translationData = { ...body?.translations[0], languages_code: translationKey };
+					}
 					if (body && translationData) {
 						const singleLanguageBody = transformData({ ...body, translations: translationData }, collection);
 						indexer.updateItem(translations[translationKey], id, singleLanguageBody, schema['tables'][collection].primary);
