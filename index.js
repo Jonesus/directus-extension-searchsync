@@ -161,7 +161,7 @@ module.exports = function registerHook({ services, env, database, getSchema }) {
 		if (extensionConfig.collections[collection].stripHtml) {
 			data = objectMap(data,
 				(value) => typeof value === 'string'
-					? he.decode(value.replace(/(<([^>]+)>)/gi, " ")).replace(/\s+/g,' ').trim()
+					? he.decode(value.replace(/(<([^>]+)>)/gi, " ")).replace(/\s+/g,' ').trim() || null
 					: value
 			);
 		}
